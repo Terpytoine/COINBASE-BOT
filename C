@@ -1,0 +1,107 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <curl/curl.h>
+#include <esmtp.h>
+
+#define COINBASE_API_URL "https://api.coinbase.com/v2/prices/%s/spot"
+#define CURRENCY_PAIR "BTC-USD"
+#define THRESHOLD_PRICE 30000.0
+#define CHECK_INTERVAL 60
+
+#define SMTP_SERVER "smtp.gmail.com"
+#define SMTP_PORT 587
+#define EMAIL_ADDRESS "your_email@gmail.com"
+#define EMAIL_PASSWORD "your_password"
+#define RECIPIENT_EMAIL "recipient_email@gmail.com"
+
+// Function declarations
+double get_current_price();
+void send_email_alert(double current_price);
+size_t write_callback(void *ptr, size_t size, size_t nmemb, char *data);
+
+int main() {
+    while (1) {
+        double current_price = get_current_price();
+        printf("Current price of %s: %.2f\n", CURRENCY_PAIR, current_price);
+        if (current_price > THRESHOLD_PRICE) {
+            send_email_alert(current_price);
+        }
+        sleep(CHECK_INTERVAL);
+    }
+    return 0;
+}
+
+// Function to get the current price from Coinbase API
+double get_current_price() {
+    CURL *curl;
+    CURLcode res;
+    char url[256];
+    snprintf(url, sizeof(url), COINBASE_API_URL, CURRENCY_PAIR);
+    char response[1024] = {0};
+
+    curl = curl_easy_init();
+    if (curl) {
+        curl_easy_setopt(curl, CURLOPT_URL, url);
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
+        curl_easy_setopt(curl, CURLOPT_WRITEDATA, response);
+        res = curl_easy_perform(curl);
+        curl_easy_cleanup(curl);
+
+        if (res != CURLE_OK) {
+            fprintf(stderr, "curl_easy_perform() failed: %s\n", curl_easy_strerror(res));
+            return -1;
+        }
+    }
+
+    // Extract price from response
+    char *price_str = strstr(response, "\"amount\":\"");
+    if (price_str) {
+        price_str += 10;
+        char *end_quote = strchr(price_str, '"');
+        if (end_quote) {
+            *end_quote = '\0';
+        }
+        return atof(price_str);
+    }
+
+    return -1;
+}
+
+// Callback function to write response data
+size_t write_callback(void *ptr, size_t size, size_t nmemb, char *data) {
+    strcat(data, (char *)ptr);
+    return size * nmemb;
+}
+
+// Function to send email alert
+void send_email_alert(double current_price) {
+    smtp_session_t session;
+    smtp_message_t message;
+    struct sigaction sa;
+
+    sa.sa_handler = SIG_IGN;
+    sigaction(SIGPIPE, &sa, NULL);
+
+    session = smtp_create_session();
+    message = smtp_add_message(session);
+
+    smtp_set_server(session, SMTP_SERVER);
+    smtp_set_port(session, SMTP_PORT);
+    smtp_set_auth(session, EMAIL_ADDRESS, EMAIL_PASSWORD);
+
+    smtp_set_from(message, EMAIL_ADDRESS);
+    smtp_add_recipient(message, RECIPIENT_EMAIL);
+
+    smtp_set_subject(message, "Crypto Alert: BTC Price Alert");
+
+    char body[256];
+    snprintf(body, sizeof(body), "The price of %s is now %.2f which is above your threshold of %.2f.", CURRENCY_PAIR, current_price, THRESHOLD_PRICE);
+    smtp_set_message_str(message, body);
+
+    if (smtp_start_session(session)) {
+        fprintf(stderr, "Failed to send email: %s\n", smtp_strerror(smtp_errno(), NULL, 0));
+    }
+
+    smtp_destroy_session(session);
+}
